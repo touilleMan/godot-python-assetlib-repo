@@ -1,0 +1,5 @@
+#!/Users/travis/build/touilleMan/godot-python/platforms/osx-64/cpython_build/bin/python3.6
+
+from idlelib.pyshell import main
+if __name__ == '__main__':
+    main()
