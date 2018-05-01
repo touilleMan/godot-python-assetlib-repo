@@ -20,50 +20,51 @@ class Array(BaseBuiltinWithGDObjOwnership):
 
     @staticmethod
     def _copy_gdobj(gdobj):
-        cpy_gdobj = godot_array_alloc()
+        cpy_gdobj = godot_array_alloc(initialized=False)
         lib.godot_array_new_copy(cpy_gdobj, gdobj)
         return cpy_gdobj
 
     def __init__(self, items=()):
         if not items:
-            self._gd_ptr = godot_array_alloc()
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new(self._gd_ptr)
         elif isinstance(items, Array):
-            self._gd_ptr = godot_array_alloc()
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new_copy(self._gd_ptr, items._gd_ptr)
         elif isinstance(items, PoolColorArray):
-            self._gd_ptr = godot_array_alloc()
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new_pool_color_array(self._gd_ptr, items._gd_ptr)
         elif isinstance(items, PoolVector3Array):
-            self._gd_ptr = godot_array_alloc()
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new_pool_vector3_array(self._gd_ptr, items._gd_ptr)
         elif isinstance(items, PoolVector2Array):
-            self._gd_ptr = godot_array_alloc()
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new_pool_vector2_array(self._gd_ptr, items._gd_ptr)
         elif isinstance(items, PoolStringArray):
-            self._gd_ptr = godot_array_alloc()
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new_pool_string_array(self._gd_ptr, items._gd_ptr)
         elif isinstance(items, PoolRealArray):
-            self._gd_ptr = godot_array_alloc()
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new_pool_real_array(self._gd_ptr, items._gd_ptr)
         elif isinstance(items, PoolIntArray):
-            self._gd_ptr = godot_array_alloc()
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new_pool_int_array(self._gd_ptr, items._gd_ptr)
         elif isinstance(items, PoolByteArray):
-            self._gd_ptr = godot_array_alloc()
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new_pool_byte_array(self._gd_ptr, items._gd_ptr)
-        elif hasattr(items, '__iter__') and not isinstance(items, (str, bytes)):
-            self._gd_ptr = godot_array_alloc()
+        elif hasattr(items, "__iter__") and not isinstance(items, (str, bytes)):
+            self._gd_ptr = godot_array_alloc(initialized=False)
             lib.godot_array_new(self._gd_ptr)
             for x in items:
                 self.append(x)
         else:
-            raise TypeError('Param `items` should be of type `Array` or `Pool*Array`')
+            raise TypeError("Param `items` should be of type `Array` or `Pool*Array`")
 
     def __eq__(self, other):
         # TODO: should be able to optimize this...
         if isinstance(other, Array):
             return list(self) == list(other)
+
         return False
 
     def __ne__(self, other):
@@ -80,18 +81,23 @@ class Array(BaseBuiltinWithGDObjOwnership):
     def __getitem__(self, idx):
         if isinstance(idx, slice):
             return Array(list(self)[idx])
+
         size = len(self)
         idx = size + idx if idx < 0 else idx
         if abs(idx) >= size:
-            raise IndexError('list index out of range')
-        ret = lib.godot_array_get(self._gd_ptr, idx)
-        return variant_to_pyobj(ffi.addressof(ret))
+            raise IndexError("list index out of range")
+
+        gdvar = lib.godot_array_get(self._gd_ptr, idx)
+        ret = variant_to_pyobj(ffi.addressof(gdvar))
+        lib.godot_variant_destroy(ffi.addressof(gdvar))
+        return ret
 
     def __setitem__(self, idx, value):
         size = len(self)
         idx = size + idx if idx < 0 else idx
         if abs(idx) >= size:
-            raise IndexError('list index out of range')
+            raise IndexError("list index out of range")
+
         var = pyobj_to_variant(value)
         lib.godot_array_set(self._gd_ptr, idx, var)
 
@@ -99,7 +105,8 @@ class Array(BaseBuiltinWithGDObjOwnership):
         size = len(self)
         idx = size + idx if idx < 0 else idx
         if abs(idx) >= size:
-            raise IndexError('list index out of range')
+            raise IndexError("list index out of range")
+
         lib.godot_array_remove(self._gd_ptr, idx)
 
     def __len__(self):
@@ -108,16 +115,15 @@ class Array(BaseBuiltinWithGDObjOwnership):
     def __iadd__(self, items):
         if isinstance(items, (str, bytes)):
             return NotImplemented
+
         for x in items:
             self.append(x)
         return self
 
-    def __radd__(self, items):
-        return Array(items) + self
-
     def __add__(self, items):
         if isinstance(items, (str, bytes)):
-            return NotImplemented        
+            return NotImplemented
+
         arr = Array()
         for x in self:
             arr.append(x)
@@ -148,12 +154,16 @@ class Array(BaseBuiltinWithGDObjOwnership):
         lib.godot_array_erase(self._gd_ptr, var)
 
     def front(self):
-        ret = lib.godot_array_front(self._gd_ptr)
-        return variant_to_pyobj(ffi.addressof(ret))
+        gdvar = lib.godot_array_front(self._gd_ptr)
+        ret = variant_to_pyobj(ffi.addressof(gdvar))
+        lib.godot_variant_destroy(ffi.addressof(gdvar))
+        return ret
 
     def back(self):
-        ret = lib.godot_array_back(self._gd_ptr)
-        return variant_to_pyobj(ffi.addressof(ret))
+        gdvar = lib.godot_array_back(self._gd_ptr)
+        ret = variant_to_pyobj(ffi.addressof(gdvar))
+        lib.godot_variant_destroy(ffi.addressof(gdvar))
+        return ret
 
     def find(self, what, from_):
         var = pyobj_to_variant(what)
@@ -178,12 +188,16 @@ class Array(BaseBuiltinWithGDObjOwnership):
         lib.godot_array_invert(self._gd_ptr)
 
     def pop_back(self):
-        ret = lib.godot_array_pop_back(self._gd_ptr)
-        return variant_to_pyobj(ffi.addressof(ret))
+        gdvar = lib.godot_array_pop_back(self._gd_ptr)
+        ret = variant_to_pyobj(ffi.addressof(gdvar))
+        lib.godot_variant_destroy(ffi.addressof(gdvar))
+        return ret
 
     def pop_front(self):
-        ret = lib.godot_array_pop_front(self._gd_ptr)
-        return variant_to_pyobj(ffi.addressof(ret))
+        gdvar = lib.godot_array_pop_front(self._gd_ptr)
+        ret = variant_to_pyobj(ffi.addressof(gdvar))
+        lib.godot_variant_destroy(ffi.addressof(gdvar))
+        return ret
 
     def push_back(self, value):
         var = pyobj_to_variant(value)
@@ -203,10 +217,11 @@ class Array(BaseBuiltinWithGDObjOwnership):
     def sort(self):
         lib.godot_array_sort(self._gd_ptr)
 
-    # TODO
-    # def sort_custom(self, obj, func):
-    #     self._check_param_type('obj', obj, BaseObject)
-    #     self._check_param_type('func', func, str)
-    #     raw_func = pyobj_to_gdobj(func)
-    #     # TODO how to check sort hasn't failed ?
-    #     lib.godot_array_sort_custom(self._gd_ptr, obj._gd_ptr, raw_func)
+
+# TODO
+# def sort_custom(self, obj, func):
+#     self._check_param_type('obj', obj, BaseObject)
+#     self._check_param_type('func', func, str)
+#     raw_func = pyobj_to_gdobj(func)
+#     # TODO how to check sort hasn't failed ?
+#     lib.godot_array_sort_custom(self._gd_ptr, obj._gd_ptr, raw_func)

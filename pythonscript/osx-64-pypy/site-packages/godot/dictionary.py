@@ -12,24 +12,25 @@ class Dictionary(BaseBuiltinWithGDObjOwnership):
 
     @staticmethod
     def _copy_gdobj(gdobj):
-        cpy_gdobj = godot_dictionary_alloc()
+        cpy_gdobj = godot_dictionary_alloc(initialized=False)
         lib.godot_dictionary_new_copy(cpy_gdobj, gdobj)
         return cpy_gdobj
 
     def __init__(self, items=None, **kwargs):
         if not items:
-            self._gd_ptr = godot_dictionary_alloc()
+            self._gd_ptr = godot_dictionary_alloc(initialized=False)
             lib.godot_dictionary_new(self._gd_ptr)
         elif isinstance(items, Dictionary):
-            self._gd_ptr = godot_dictionary_alloc()
+            self._gd_ptr = godot_dictionary_alloc(initialized=False)
             lib.godot_dictionary_new_copy(self._gd_ptr, items._gd_ptr)
         elif isinstance(items, dict):
-            self._gd_ptr = godot_dictionary_alloc()
+            self._gd_ptr = godot_dictionary_alloc(initialized=False)
             lib.godot_dictionary_new(self._gd_ptr)
             for k, v in items.items():
                 self[k] = v
         else:
-            raise TypeError('Param `items` should be of type `dict` or `Dictionary`')
+            raise TypeError("Param `items` should be of type `dict` or `Dictionary`")
+
         for k, v in kwargs.items():
             self[k] = v
 
@@ -39,7 +40,9 @@ class Dictionary(BaseBuiltinWithGDObjOwnership):
     def __eq__(self, other):
         # TODO? lib.godot_dictionary_operator_equal compares only the underlying
         # dict pool address instead of comparing each stored data.
-        return isinstance(other, Dictionary) and lib.godot_dictionary_operator_equal(self._gd_ptr, other._gd_ptr)
+        return isinstance(other, Dictionary) and lib.godot_dictionary_operator_equal(
+            self._gd_ptr, other._gd_ptr
+        )
 
     def __ne__(self, other):
         return not self == other
@@ -56,8 +59,10 @@ class Dictionary(BaseBuiltinWithGDObjOwnership):
 
     def __getitem__(self, key):
         var = pyobj_to_variant(key)
-        retvar = lib.godot_dictionary_get(self._gd_ptr, var)
-        return variant_to_pyobj(ffi.addressof(retvar))
+        gdvar = lib.godot_dictionary_get(self._gd_ptr, var)
+        ret = variant_to_pyobj(ffi.addressof(gdvar))
+        lib.godot_variant_destroy(ffi.addressof(gdvar))
+        return ret
 
     def __setitem__(self, key, value):
         varkey = pyobj_to_variant(key)
@@ -73,9 +78,15 @@ class Dictionary(BaseBuiltinWithGDObjOwnership):
     # Methods
 
     def copy(self):
-        gd_ptr = godot_dictionary_alloc()
+        gd_ptr = godot_dictionary_alloc(initialized=False)
         lib.godot_dictionary_new_copy(gd_ptr, self._gd_ptr)
         return Dictionary.build_from_gdobj(gd_ptr, steal=True)
+
+    def update(self, items):
+        if not isinstance(items, (Dictionary, dict)):
+            raise TypeError("Param `items` should be of type `dict` or `Dictionary`")
+        for k, v in items.items():
+            self[k] = v
 
     def pop(self, *args):
         key, *default = args
@@ -84,8 +95,10 @@ class Dictionary(BaseBuiltinWithGDObjOwnership):
         except KeyError:
             if default:
                 return default[0]
+
             else:
                 raise
+
         del self[key]
         return value
 
@@ -107,7 +120,7 @@ class Dictionary(BaseBuiltinWithGDObjOwnership):
         lib.godot_dictionary_clear(self._gd_ptr)
 
     def has_all(self, keys):
-        self._check_param_type('keys', keys, Array)
+        self._check_param_type("keys", keys, Array)
         return bool(lib.godot_dictionary_has_all(self._gd_ptr, keys._gd_ptr))
 
     def hash(self):
