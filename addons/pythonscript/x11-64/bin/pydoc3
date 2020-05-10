@@ -1,0 +1,5 @@
+#!/home/vsts/work/1/s/build/x11-64/platforms/x11-64/cpython_build/bin/python3.7
+
+import pydoc
+if __name__ == '__main__':
+    pydoc.cli()

@@ -4,7 +4,7 @@
 \    \_\  (  <_> ) /_/ (  <_> )  |    |    |    \___  | |  | |   Y  (  <_> )   |  \
  \______  /\____/\____ |\____/|__|    |____|    / ____| |__| |___|  /\____/|___|  /
         \/            \/                        \/                \/            \/ 
-                                                                     v0.11.3 (2018-05-01)
+                                                                     v0.30.0 (2020-05-10)
 
 
 Introduction
@@ -28,30 +28,29 @@ Every Godot core features are expected to work fine:
 
 On top of that, mixing GDscript and Python code inside a project should work fine.
 
-Python and pip are working, however depending on platform and backend they
-- on Windows+CPython use `python.exe` and `python.exe -m pip`
-- on Linux+CPython `bin/python` and `bin/pip` are provided out of the box.
-  However you must provide path to `libpython3.6m.so` to make them run:
-  ```
-  $ LD_LIBRARY_PATH=`pwd`/lib ./bin/pip3  --version
-  $ LD_LIBRARY_PATH=`pwd`/lib ./bin/python  --version
-  ```
-- on Linux+Pypy `bin/pypy` runs like a charm, you should use ensurepip to
-  install pip:
-  ```
-  $ bin/pypy -m ensurepip
-  $ bin/pypy -m pip --version
-  ```
+
+Using Pip
+---------
+
+On windows, pip must be installed first with `ensurepip`:
+```
+$ <pythonscript_dir>/windows-64/python.exe -m ensurepip  # Only need to do that once
+$ <pythonscript_dir>/windows-64/python.exe -m pip install whatever
+```
+
+On linux/macOS, pip should be already present:
+```
+$ <pythonscript_dir>/x11-64/bin/python3 -m pip install whatever
+```
+
+Note you must use `python -m pip` to invoke pip (using the command `pip`
+directly will likely fail in a cryptic manner)
 
 
 Not so well features
 --------------------
 
-Memory management is a big issue (given Godot and Python garbage collectors should be synchronized)
-so leaks are possible (hence Godot complaining there is still MemoryPool allocs in use at exit...).
-
-Exporting the project hasn't been tested at all (however exporting for linux should be pretty simple and
-may work out of the box...).
+Exporting the project hasn't been tested at all (however exporting for linux should be pretty simple and may work out of the box...).
 
 
 Have fun ;-)
