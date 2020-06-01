@@ -7,7 +7,7 @@ import posixpath
 import re
 import sys
 from _collections_abc import Sequence
-from errno import EINVAL, ENOENT, ENOTDIR, EBADF
+from errno import EINVAL, ENOENT, ENOTDIR, EBADF, ELOOP
 from operator import attrgetter
 from stat import S_ISDIR, S_ISLNK, S_ISREG, S_ISSOCK, S_ISBLK, S_ISCHR, S_ISFIFO
 from urllib.parse import quote_from_bytes as urlquote_from_bytes
@@ -34,8 +34,18 @@ __all__ = [
 # Internals
 #
 
-# EBADF - guard agains macOS `stat` throwing EBADF
-_IGNORED_ERROS = (ENOENT, ENOTDIR, EBADF)
+# EBADF - guard against macOS `stat` throwing EBADF
+_IGNORED_ERROS = (ENOENT, ENOTDIR, EBADF, ELOOP)
+
+_IGNORED_WINERRORS = (
+    21,  # ERROR_NOT_READY - drive exists but is not accessible
+    1921,  # ERROR_CANT_RESOLVE_FILENAME - fix for broken symlink pointing to itself
+)
+
+def _ignore_error(exception):
+    return (getattr(exception, 'errno', None) in _IGNORED_ERROS or
+            getattr(exception, 'winerror', None) in _IGNORED_WINERRORS)
+
 
 def _is_wildcard_pattern(pat):
     # Whether this pattern needs actual matching using fnmatch, or can
@@ -177,6 +187,9 @@ class _WindowsFlavour(_Flavour):
     def casefold_parts(self, parts):
         return [p.lower() for p in parts]
 
+    def compile_pattern(self, pattern):
+        return re.compile(fnmatch.translate(pattern), re.IGNORECASE).fullmatch
+
     def resolve(self, path, strict=False):
         s = str(path)
         if not s:
@@ -240,9 +253,7 @@ class _WindowsFlavour(_Flavour):
             return 'file:' + urlquote_from_bytes(path.as_posix().encode('utf-8'))
 
     def gethomedir(self, username):
-        if 'HOME' in os.environ:
-            userhome = os.environ['HOME']
-        elif 'USERPROFILE' in os.environ:
+        if 'USERPROFILE' in os.environ:
             userhome = os.environ['USERPROFILE']
         elif 'HOMEPATH' in os.environ:
             try:
@@ -298,6 +309,9 @@ class _PosixFlavour(_Flavour):
 
     def casefold_parts(self, parts):
         return parts
+
+    def compile_pattern(self, pattern):
+        return re.compile(fnmatch.translate(pattern)).fullmatch
 
     def resolve(self, path, strict=False):
         sep = self.sep
@@ -402,6 +416,13 @@ class _NormalAccessor(_Accessor):
 
     unlink = os.unlink
 
+    if hasattr(os, "link"):
+        link_to = os.link
+    else:
+        @staticmethod
+        def link_to(self, target):
+            raise NotImplementedError("os.link() not available on this system")
+
     rmdir = os.rmdir
 
     rename = os.rename
@@ -434,7 +455,7 @@ _normal_accessor = _NormalAccessor()
 # Globbing helpers
 #
 
-def _make_selector(pattern_parts):
+def _make_selector(pattern_parts, flavour):
     pat = pattern_parts[0]
     child_parts = pattern_parts[1:]
     if pat == '**':
@@ -445,7 +466,7 @@ def _make_selector(pattern_parts):
         cls = _WildcardSelector
     else:
         cls = _PreciseSelector
-    return cls(pat, child_parts)
+    return cls(pat, child_parts, flavour)
 
 if hasattr(functools, "lru_cache"):
     _make_selector = functools.lru_cache()(_make_selector)
@@ -455,10 +476,10 @@ class _Selector:
     """A selector matches a specific glob pattern part against the children
     of a given path."""
 
-    def __init__(self, child_parts):
+    def __init__(self, child_parts, flavour):
         self.child_parts = child_parts
         if child_parts:
-            self.successor = _make_selector(child_parts)
+            self.successor = _make_selector(child_parts, flavour)
             self.dironly = True
         else:
             self.successor = _TerminatingSelector()
@@ -484,9 +505,9 @@ class _TerminatingSelector:
 
 class _PreciseSelector(_Selector):
 
-    def __init__(self, name, child_parts):
+    def __init__(self, name, child_parts, flavour):
         self.name = name
-        _Selector.__init__(self, child_parts)
+        _Selector.__init__(self, child_parts, flavour)
 
     def _select_from(self, parent_path, is_dir, exists, scandir):
         try:
@@ -500,42 +521,51 @@ class _PreciseSelector(_Selector):
 
 class _WildcardSelector(_Selector):
 
-    def __init__(self, pat, child_parts):
-        self.pat = re.compile(fnmatch.translate(pat))
-        _Selector.__init__(self, child_parts)
+    def __init__(self, pat, child_parts, flavour):
+        self.match = flavour.compile_pattern(pat)
+        _Selector.__init__(self, child_parts, flavour)
 
     def _select_from(self, parent_path, is_dir, exists, scandir):
         try:
-            cf = parent_path._flavour.casefold
-            entries = list(scandir(parent_path))
+            with scandir(parent_path) as scandir_it:
+                entries = list(scandir_it)
             for entry in entries:
-                if not self.dironly or entry.is_dir():
-                    name = entry.name
-                    casefolded = cf(name)
-                    if self.pat.match(casefolded):
-                        path = parent_path._make_child_relpath(name)
-                        for p in self.successor._select_from(path, is_dir, exists, scandir):
-                            yield p
+                if self.dironly:
+                    try:
+                        # "entry.is_dir()" can raise PermissionError
+                        # in some cases (see bpo-38894), which is not
+                        # among the errors ignored by _ignore_error()
+                        if not entry.is_dir():
+                            continue
+                    except OSError as e:
+                        if not _ignore_error(e):
+                            raise
+                        continue
+                name = entry.name
+                if self.match(name):
+                    path = parent_path._make_child_relpath(name)
+                    for p in self.successor._select_from(path, is_dir, exists, scandir):
+                        yield p
         except PermissionError:
             return
 
 
-
 class _RecursiveWildcardSelector(_Selector):
 
-    def __init__(self, pat, child_parts):
-        _Selector.__init__(self, child_parts)
+    def __init__(self, pat, child_parts, flavour):
+        _Selector.__init__(self, child_parts, flavour)
 
     def _iterate_directories(self, parent_path, is_dir, scandir):
         yield parent_path
         try:
-            entries = list(scandir(parent_path))
+            with scandir(parent_path) as scandir_it:
+                entries = list(scandir_it)
             for entry in entries:
                 entry_is_dir = False
                 try:
                     entry_is_dir = entry.is_dir()
                 except OSError as e:
-                    if e.errno not in _IGNORED_ERROS:
+                    if not _ignore_error(e):
                         raise
                 if entry_is_dir and not entry.is_symlink():
                     path = parent_path._make_child_relpath(entry.name)
@@ -777,7 +807,11 @@ class PurePath(object):
 
     @property
     def suffix(self):
-        """The final component's last suffix, if any."""
+        """
+        The final component's last suffix, if any.
+
+        This includes the leading period. For example: '.txt'
+        """
         name = self.name
         i = name.rfind('.')
         if 0 < i < len(name) - 1:
@@ -787,7 +821,11 @@ class PurePath(object):
 
     @property
     def suffixes(self):
-        """A list of the final component's suffixes, if any."""
+        """
+        A list of the final component's suffixes, if any.
+
+        These include the leading periods. For example: ['.tar', '.gz']
+        """
         name = self.name
         if name.endswith('.'):
             return []
@@ -889,10 +927,16 @@ class PurePath(object):
         return self._make_child(args)
 
     def __truediv__(self, key):
-        return self._make_child((key,))
+        try:
+            return self._make_child((key,))
+        except TypeError:
+            return NotImplemented
 
     def __rtruediv__(self, key):
-        return self._from_parts([key] + self._parts)
+        try:
+            return self._from_parts([key] + self._parts)
+        except TypeError:
+            return NotImplemented
 
     @property
     def parent(self):
@@ -1081,27 +1125,26 @@ class Path(PurePath):
 
     def glob(self, pattern):
         """Iterate over this subtree and yield all existing files (of any
-        kind, including directories) matching the given pattern.
+        kind, including directories) matching the given relative pattern.
         """
         if not pattern:
             raise ValueError("Unacceptable pattern: {!r}".format(pattern))
-        pattern = self._flavour.casefold(pattern)
         drv, root, pattern_parts = self._flavour.parse_parts((pattern,))
         if drv or root:
             raise NotImplementedError("Non-relative patterns are unsupported")
-        selector = _make_selector(tuple(pattern_parts))
+        selector = _make_selector(tuple(pattern_parts), self._flavour)
         for p in selector.select_from(self):
             yield p
 
     def rglob(self, pattern):
         """Recursively yield all existing files (of any kind, including
-        directories) matching the given pattern, anywhere in this subtree.
+        directories) matching the given relative pattern, anywhere in
+        this subtree.
         """
-        pattern = self._flavour.casefold(pattern)
         drv, root, pattern_parts = self._flavour.parse_parts((pattern,))
         if drv or root:
             raise NotImplementedError("Non-relative patterns are unsupported")
-        selector = _make_selector(("**",) + tuple(pattern_parts))
+        selector = _make_selector(("**",) + tuple(pattern_parts), self._flavour)
         for p in selector.select_from(self):
             yield p
 
@@ -1267,14 +1310,18 @@ class Path(PurePath):
             self._raise_closed()
         self._accessor.lchmod(self, mode)
 
-    def unlink(self):
+    def unlink(self, missing_ok=False):
         """
         Remove this file or link.
         If the path is a directory, use rmdir() instead.
         """
         if self._closed:
             self._raise_closed()
-        self._accessor.unlink(self)
+        try:
+            self._accessor.unlink(self)
+        except FileNotFoundError:
+            if not missing_ok:
+                raise
 
     def rmdir(self):
         """
@@ -1293,22 +1340,34 @@ class Path(PurePath):
             self._raise_closed()
         return self._accessor.lstat(self)
 
+    def link_to(self, target):
+        """
+        Create a hard link pointing to a path named target.
+        """
+        if self._closed:
+            self._raise_closed()
+        self._accessor.link_to(self, target)
+
     def rename(self, target):
         """
-        Rename this path to the given path.
+        Rename this path to the given path,
+        and return a new Path instance pointing to the given path.
         """
         if self._closed:
             self._raise_closed()
         self._accessor.rename(self, target)
+        return self.__class__(target)
 
     def replace(self, target):
         """
         Rename this path to the given path, clobbering the existing
-        destination if it exists.
+        destination if it exists, and return a new Path instance
+        pointing to the given path.
         """
         if self._closed:
             self._raise_closed()
         self._accessor.replace(self, target)
+        return self.__class__(target)
 
     def symlink_to(self, target, target_is_directory=False):
         """
@@ -1328,8 +1387,11 @@ class Path(PurePath):
         try:
             self.stat()
         except OSError as e:
-            if e.errno not in _IGNORED_ERROS:
+            if not _ignore_error(e):
                 raise
+            return False
+        except ValueError:
+            # Non-encodable path
             return False
         return True
 
@@ -1340,10 +1402,13 @@ class Path(PurePath):
         try:
             return S_ISDIR(self.stat().st_mode)
         except OSError as e:
-            if e.errno not in _IGNORED_ERROS:
+            if not _ignore_error(e):
                 raise
             # Path doesn't exist or is a broken symlink
             # (see https://bitbucket.org/pitrou/pathlib/issue/12/)
+            return False
+        except ValueError:
+            # Non-encodable path
             return False
 
     def is_file(self):
@@ -1354,10 +1419,13 @@ class Path(PurePath):
         try:
             return S_ISREG(self.stat().st_mode)
         except OSError as e:
-            if e.errno not in _IGNORED_ERROS:
+            if not _ignore_error(e):
                 raise
             # Path doesn't exist or is a broken symlink
             # (see https://bitbucket.org/pitrou/pathlib/issue/12/)
+            return False
+        except ValueError:
+            # Non-encodable path
             return False
 
     def is_mount(self):
@@ -1388,9 +1456,12 @@ class Path(PurePath):
         try:
             return S_ISLNK(self.lstat().st_mode)
         except OSError as e:
-            if e.errno not in _IGNORED_ERROS:
+            if not _ignore_error(e):
                 raise
             # Path doesn't exist
+            return False
+        except ValueError:
+            # Non-encodable path
             return False
 
     def is_block_device(self):
@@ -1400,10 +1471,13 @@ class Path(PurePath):
         try:
             return S_ISBLK(self.stat().st_mode)
         except OSError as e:
-            if e.errno not in _IGNORED_ERROS:
+            if not _ignore_error(e):
                 raise
             # Path doesn't exist or is a broken symlink
             # (see https://bitbucket.org/pitrou/pathlib/issue/12/)
+            return False
+        except ValueError:
+            # Non-encodable path
             return False
 
     def is_char_device(self):
@@ -1413,10 +1487,13 @@ class Path(PurePath):
         try:
             return S_ISCHR(self.stat().st_mode)
         except OSError as e:
-            if e.errno not in _IGNORED_ERROS:
+            if not _ignore_error(e):
                 raise
             # Path doesn't exist or is a broken symlink
             # (see https://bitbucket.org/pitrou/pathlib/issue/12/)
+            return False
+        except ValueError:
+            # Non-encodable path
             return False
 
     def is_fifo(self):
@@ -1426,10 +1503,13 @@ class Path(PurePath):
         try:
             return S_ISFIFO(self.stat().st_mode)
         except OSError as e:
-            if e.errno not in _IGNORED_ERROS:
+            if not _ignore_error(e):
                 raise
             # Path doesn't exist or is a broken symlink
             # (see https://bitbucket.org/pitrou/pathlib/issue/12/)
+            return False
+        except ValueError:
+            # Non-encodable path
             return False
 
     def is_socket(self):
@@ -1439,10 +1519,13 @@ class Path(PurePath):
         try:
             return S_ISSOCK(self.stat().st_mode)
         except OSError as e:
-            if e.errno not in _IGNORED_ERROS:
+            if not _ignore_error(e):
                 raise
             # Path doesn't exist or is a broken symlink
             # (see https://bitbucket.org/pitrou/pathlib/issue/12/)
+            return False
+        except ValueError:
+            # Non-encodable path
             return False
 
     def expanduser(self):

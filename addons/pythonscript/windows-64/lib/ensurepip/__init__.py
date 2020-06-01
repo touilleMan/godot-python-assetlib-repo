@@ -2,15 +2,16 @@ import os
 import os.path
 import pkgutil
 import sys
+import runpy
 import tempfile
 
 
 __all__ = ["version", "bootstrap"]
 
 
-_SETUPTOOLS_VERSION = "39.0.1"
+_SETUPTOOLS_VERSION = "41.2.0"
 
-_PIP_VERSION = "10.0.1"
+_PIP_VERSION = "19.2.3"
 
 _PROJECTS = [
     ("setuptools", _SETUPTOOLS_VERSION),
@@ -23,9 +24,18 @@ def _run_pip(args, additional_paths=None):
     if additional_paths is not None:
         sys.path = additional_paths + sys.path
 
-    # Install the bundled software
-    import pip._internal
-    return pip._internal.main(args)
+    # Invoke pip as if it's the main module, and catch the exit.
+    backup_argv = sys.argv[:]
+    sys.argv[1:] = args
+    try:
+        # run_module() alters sys.modules and sys.argv, but restores them at exit
+        runpy.run_module("pip", run_name="__main__", alter_sys=True)
+    except SystemExit as exc:
+        return exc.code
+    finally:
+        sys.argv[:] = backup_argv
+
+    raise SystemError("pip did not exit, this should never happen")
 
 
 def version():
@@ -72,6 +82,8 @@ def _bootstrap(*, root=None, upgrade=False, user=False,
     """
     if altinstall and default_pip:
         raise ValueError("Cannot use altinstall and default_pip together")
+
+    sys.audit("ensurepip.bootstrap", root)
 
     _disable_pip_configuration_settings()
 
