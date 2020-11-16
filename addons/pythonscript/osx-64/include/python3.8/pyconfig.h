@@ -600,7 +600,7 @@
 /* #undef HAVE_LIBIEEE */
 
 /* Define to 1 if you have the <libintl.h> header file. */
-/* #undef HAVE_LIBINTL_H */
+#define HAVE_LIBINTL_H 1
 
 /* Define if you have the readline library (-lreadline). */
 #define HAVE_LIBREADLINE 1
@@ -1535,7 +1535,7 @@
 #define WITH_DYLD 1
 
 /* Define to 1 if libintl is needed for locale functions. */
-/* #undef WITH_LIBINTL */
+#define WITH_LIBINTL 1
 
 /* Define if you want to produce an OpenStep/Rhapsody framework (shared
    library plus accessory files). */
